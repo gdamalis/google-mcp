@@ -1,0 +1,6 @@
+accounts/*/credentials.json
+accounts/*/token.json
+.venv/
+__pycache__/
+*.pyc
+uv.lock
