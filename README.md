@@ -9,6 +9,7 @@ google/
 ├── app.py              # FastMCP instance (shared across modules)
 ├── auth.py             # OAuth2 flow, token caching, service builder
 ├── server.py           # Entry point — imports tool modules
+├── authenticate.py     # First-time auth helper script
 ├── tools/
 │   ├── gmail.py        # 13 tools — search, drafts, labels, trash
 │   ├── calendar.py     #  6 tools — events CRUD, calendar listing
@@ -62,12 +63,12 @@ Repeat for each account you want to set up.
 
 ### 3. Authenticate
 
-Run the server once per account to complete the OAuth browser flow:
+Run the auth helper once per account to complete the OAuth browser flow:
 
 ```bash
-ACCOUNT=personal uv run python server.py
+ACCOUNT=personal uv run python authenticate.py
 # Browser opens → sign in with your Google account → grant access
-# token.json is saved automatically — Ctrl+C to stop
+# token.json is saved automatically
 ```
 
 ### 4. Register with Claude Code
@@ -142,7 +143,7 @@ mkdir accounts/myaccount
 cp ~/Downloads/client_secret_*.json accounts/myaccount/credentials.json
 
 # 3. Authenticate
-ACCOUNT=myaccount uv run python server.py
+ACCOUNT=myaccount uv run python authenticate.py
 
 # 4. Register with Claude Code
 claude mcp add --transport stdio --scope user google-myaccount \
@@ -155,9 +156,10 @@ claude mcp add --transport stdio --scope user google-myaccount \
 | Problem | Fix |
 |---|---|
 | `credentials.json not found` | Download OAuth client JSON from Google Cloud Console and place it in `accounts/{name}/` |
-| `Token refresh failed` | Delete `accounts/{name}/token.json` and restart the server to re-authenticate |
-| `403 Insufficient Permission` | Scopes changed — delete `token.json` and re-authenticate to get new scopes |
+| `Token refresh failed` | Delete `accounts/{name}/token.json` and re-run `authenticate.py` |
+| `403 Insufficient Permission` | Scopes changed — delete `token.json` and re-run `authenticate.py` |
 | `ACCOUNT env var not set` | The server requires `ACCOUNT=name` to know which credentials to use |
+| `json_invalid` error in terminal | Don't run `server.py` directly — use `authenticate.py` for auth, Claude Code launches the server |
 
 ## Security
 
