@@ -20,6 +20,7 @@ import tools.gmail  # noqa: F401, E402
 import tools.calendar  # noqa: F401, E402
 import tools.docs  # noqa: F401, E402
 import tools.sheets  # noqa: F401, E402
+import tools.drive  # noqa: F401, E402
 
 if __name__ == "__main__":
     mcp.run(transport="stdio")

@@ -1,6 +1,6 @@
 # Google MCP Server
 
-A [Model Context Protocol](https://modelcontextprotocol.io) server for Claude Code that provides 30 tools across Gmail, Google Calendar, Google Docs, and Google Sheets. Supports multiple Google accounts via environment variable isolation.
+A [Model Context Protocol](https://modelcontextprotocol.io) server for Claude Code that provides 33 tools across Gmail, Google Calendar, Google Docs, Google Sheets, and Google Drive. Supports multiple Google accounts via environment variable isolation.
 
 ## Architecture
 
@@ -14,7 +14,8 @@ google/
 │   ├── gmail.py        # 13 tools — search, drafts, labels, trash
 │   ├── calendar.py     #  6 tools — events CRUD, calendar listing
 │   ├── docs.py         #  5 tools — search, read, create, edit
-│   └── sheets.py       #  6 tools — search, read, write, create
+│   ├── sheets.py       #  6 tools — search, read, write, create
+│   └── drive.py        #  3 tools — folder browsing, file search
 └── accounts/
     ├── personal/       # credentials.json + token.json per account
     ├── work1/
@@ -132,6 +133,14 @@ Verify: `claude mcp list` should show the server as connected.
 | `append_to_sheet` | Append rows after existing data |
 | `create_spreadsheet` | Create a new spreadsheet |
 | `list_sheet_names` | List all sheets/tabs in a spreadsheet |
+
+### Drive
+
+| Tool | Description |
+|---|---|
+| `list_folder` | List files and subfolders in a Drive folder (including shared drives) |
+| `search_drive` | Search all file types by name/content with optional type filter |
+| `find_folder` | Find a folder by name to get its ID for browsing |
 
 ## Adding a New Account
 
