@@ -145,3 +145,23 @@ class TestBlocks:
         with_border = [s for s in para_styles
                        if s["updateParagraphStyle"]["paragraphStyle"].get("borderBottom")]
         assert len(with_border) >= 1
+
+
+class TestImages:
+    def test_image_url_inline(self):
+        md = "![alt](https://example.com/img.png)"
+        reqs = markdown_to_requests(md, insert_index=1)
+        img_reqs = [r for r in reqs if "insertInlineImage" in r]
+        assert len(img_reqs) == 1
+        assert img_reqs[0]["insertInlineImage"]["uri"] == "https://example.com/img.png"
+        assert img_reqs[0]["insertInlineImage"]["location"]["index"] == 1
+
+    def test_image_local_path_skipped_in_pure_transformer(self):
+        """Local paths require Drive upload — not in scope for the pure transformer.
+        They're handled by the public insert_image tool. The transformer should
+        either skip or emit a placeholder request the caller can post-process."""
+        md = "![alt](./local.png)"
+        reqs = markdown_to_requests(md, insert_index=1)
+        img_reqs = [r for r in reqs if "insertInlineImage" in r]
+        # Local paths cannot be inserted via Docs API directly — skip with a log.
+        assert len(img_reqs) == 0

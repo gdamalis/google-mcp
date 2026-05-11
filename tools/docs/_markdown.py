@@ -56,17 +56,17 @@ class _State:
 
 def _render_inline(state: _State, inline_token: Token) -> int:
     """
-    Render an inline token (its `children` are spans) into a single insertText
-    request containing the full plain text, followed by updateTextStyle requests
-    for styled ranges. Returns the end index (before any trailing newline).
+    Render an inline token (its `children` are spans) into insertText requests
+    containing the plain text, followed by updateTextStyle requests for styled
+    ranges. When an inline image is encountered, the text buffer is flushed first,
+    then an insertInlineImage request is appended. Returns the end index (before
+    any trailing newline).
 
     The caller is responsible for inserting the trailing "\\n".
     """
     children = inline_token.children or []
     style_stack: list[dict] = []  # active styles for nested marks
 
-    # First pass: build plain text and collect (rel_start, rel_end, style, fields)
-    # using relative offsets within the paragraph.
     plain_parts: list[str] = []
     pending_styles: list[tuple[int, int, dict, str]] = []
     rel_cursor: int = 0
@@ -79,6 +79,19 @@ def _render_inline(state: _State, inline_token: Token) -> int:
                 merged[k] = v
                 fields.add(k)
         return merged, ",".join(sorted(fields))
+
+    def flush_buffer() -> None:
+        nonlocal plain_parts, pending_styles, rel_cursor
+        if not plain_parts:
+            return
+        full_text = "".join(plain_parts)
+        para_start = state.cursor
+        state.insert_text(full_text)
+        for rel_start, rel_end, style, fields in pending_styles:
+            state.style_text(para_start + rel_start, para_start + rel_end, style, fields)
+        plain_parts = []
+        pending_styles = []
+        rel_cursor = 0
 
     for child in children:
         if child.type == "text":
@@ -123,22 +136,31 @@ def _render_inline(state: _State, inline_token: Token) -> int:
             style_stack.append({"link": {"url": url}})
         elif child.type == "link_close":
             style_stack.pop()
+        elif child.type == "image":
+            attrs = child.attrs or {}
+            src = attrs.get("src", "") if isinstance(attrs, dict) else next(
+                (v for k, v in attrs if k == "src"), ""
+            )
+            if src.startswith("http://") or src.startswith("https://"):
+                flush_buffer()
+                state.requests.append({
+                    "insertInlineImage": {
+                        "location": {"index": state.cursor},
+                        "uri": src,
+                    }
+                })
+                state.cursor += 1  # images are 1 char wide in Docs
+            else:
+                logger.warning("Skipping local image path (Drive upload required): %s", src)
         else:
             logger.warning("Unhandled inline token type: %s", child.type)
 
-    # Second pass: emit single insertText for the full plain text + trailing newline
-    full_text = "".join(plain_parts) + "\n"
-    para_start = state.cursor
-    state.insert_text(full_text)
-    paragraph_end = state.cursor - 1  # end index before the trailing newline
+    # Append the trailing newline to plain_parts, then flush everything
+    plain_parts.append("\n")
+    rel_cursor += 1
+    flush_buffer()
 
-    # Emit style requests using absolute indices
-    for rel_start, rel_end, style, fields in pending_styles:
-        abs_start = para_start + rel_start
-        abs_end = para_start + rel_end
-        state.style_text(abs_start, abs_end, style, fields)
-
-    return paragraph_end
+    return state.cursor - 1  # end index before the trailing newline
 
 
 _BULLET_PRESETS = {
