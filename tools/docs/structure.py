@@ -74,3 +74,107 @@ def insert_section_break(
         }}]},
     ).execute()
     return {"id": document_id, "status": f"{type} section break at {index}."}
+
+
+@mcp.tool()
+@tool_errors
+def update_section_columns(
+    document_id: str,
+    section_start_index: int,
+    column_count: int,
+    separator: bool = False,
+) -> dict:
+    """
+    Set the column count for a section.
+
+    A section's start is at a section break (or document start). Use
+    `read_doc(format='json')` to find sectionBreak elements and their indices.
+
+    Args:
+        section_start_index: Index of the section break that begins the section
+                             (or 0 for the first section).
+        column_count: Number of columns (1, 2, 3, ...).
+        separator: Draw a vertical line between columns.
+    """
+    if column_count < 1:
+        raise ValueError("column_count must be >= 1")
+
+    docs().documents().batchUpdate(
+        documentId=document_id,
+        body={"requests": [{"updateSectionStyle": {
+            "range": {"startIndex": section_start_index, "endIndex": section_start_index + 1},
+            "sectionStyle": {
+                "columnProperties": [{} for _ in range(column_count)],
+                "columnSeparatorStyle": "BETWEEN_EACH_COLUMN" if separator else "NONE",
+            },
+            "fields": "columnProperties,columnSeparatorStyle",
+        }}]},
+    ).execute()
+    return {"id": document_id, "status": f"Section at {section_start_index} set to {column_count} columns."}
+
+
+@mcp.tool()
+@tool_errors
+def update_page_setup(
+    document_id: str,
+    top_margin_pt: Optional[float] = None,
+    bottom_margin_pt: Optional[float] = None,
+    left_margin_pt: Optional[float] = None,
+    right_margin_pt: Optional[float] = None,
+    page_width_pt: Optional[float] = None,
+    page_height_pt: Optional[float] = None,
+    orientation: Optional[str] = None,
+) -> dict:
+    """
+    Update document-wide page setup.
+
+    Args:
+        margins: in points (72pt = 1 inch).
+        page_width_pt, page_height_pt: e.g. Letter = 612x792, A4 = 595x842.
+        orientation: "portrait" or "landscape". If set, swaps width/height
+                     as needed (uses Letter dimensions if width/height not given).
+    """
+    style: dict = {}
+    fields: list[str] = []
+
+    if top_margin_pt is not None:
+        style["marginTop"] = pt(top_margin_pt)
+        fields.append("marginTop")
+    if bottom_margin_pt is not None:
+        style["marginBottom"] = pt(bottom_margin_pt)
+        fields.append("marginBottom")
+    if left_margin_pt is not None:
+        style["marginLeft"] = pt(left_margin_pt)
+        fields.append("marginLeft")
+    if right_margin_pt is not None:
+        style["marginRight"] = pt(right_margin_pt)
+        fields.append("marginRight")
+
+    if orientation is not None:
+        if orientation not in ("portrait", "landscape"):
+            raise ValueError("orientation must be 'portrait' or 'landscape'")
+        w, h = page_width_pt or 612, page_height_pt or 792
+        if orientation == "landscape" and w < h:
+            w, h = h, w
+        elif orientation == "portrait" and w > h:
+            w, h = h, w
+        style["pageSize"] = {"width": pt(w), "height": pt(h)}
+        fields.append("pageSize")
+    elif page_width_pt is not None or page_height_pt is not None:
+        style["pageSize"] = {
+            "width": pt(page_width_pt or 612),
+            "height": pt(page_height_pt or 792),
+        }
+        fields.append("pageSize")
+
+    if not fields:
+        return {"id": document_id, "status": "No page setup changes specified."}
+
+    docs().documents().batchUpdate(
+        documentId=document_id,
+        body={"requests": [{"updateDocumentStyle": {
+            "documentStyle": style,
+            "fields": ",".join(fields),
+        }}]},
+    ).execute()
+    return {"id": document_id, "status": "Page setup updated."}
