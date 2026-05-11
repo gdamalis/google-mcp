@@ -189,3 +189,56 @@ class TestTables:
         # 2 rows × 2 cols = 4 cells, row-major: a, b, 1, 2
         assert [c["text"] for c in cells] == ["a", "b", "1", "2"]
         assert pending[0]["_pending_table"]["header_row"] == 0
+
+
+KITCHEN_SINK = """# Title
+
+This is a paragraph with **bold**, *italic*, ~~strike~~, `code`, and a [link](https://example.com).
+
+## Subhead
+
+- item one
+- item two
+  - nested
+- item three
+
+1. first
+2. second
+
+- [ ] todo
+- [x] done
+
+> A blockquote.
+
+""" + "```" + """python
+print("code block")
+""" + "```" + """
+
+---
+
+| Name | Score |
+|---|---|
+| Alice | 10 |
+| Bob | 7 |
+
+![pic](https://example.com/p.png)
+"""
+
+
+class TestKitchenSink:
+    def test_no_exceptions(self):
+        reqs = markdown_to_requests(KITCHEN_SINK, insert_index=1)
+        assert len(reqs) > 0
+
+    def test_request_types_present(self):
+        reqs = markdown_to_requests(KITCHEN_SINK, insert_index=1)
+        types_present = set()
+        for r in reqs:
+            for k in r:
+                types_present.add(k)
+        assert "insertText" in types_present
+        assert "updateParagraphStyle" in types_present
+        assert "updateTextStyle" in types_present
+        assert "createParagraphBullets" in types_present
+        assert "insertTable" in types_present
+        assert "insertInlineImage" in types_present
