@@ -180,3 +180,32 @@ def replace_range_markdown(
     if markdown:
         render_markdown_to_doc(service, document_id, markdown, insert_index=start_index)
     return {"id": document_id, "status": f"Replaced range with markdown."}
+
+
+@mcp.tool()
+@tool_errors
+def find_and_replace(
+    document_id: str,
+    find: str,
+    replace: str,
+    match_case: bool = False,
+) -> dict:
+    """
+    Find and replace text across the entire document.
+
+    Args:
+        document_id: The Google Docs document ID.
+        find: Text to search for.
+        replace: Replacement text.
+        match_case: Whether to match case exactly (default False).
+    """
+    service = docs()
+    response = service.documents().batchUpdate(
+        documentId=document_id,
+        body={"requests": [{"replaceAllText": {
+            "containsText": {"text": find, "matchCase": match_case},
+            "replaceText": replace,
+        }}]},
+    ).execute()
+    occurrences = response.get("replies", [{}])[0].get("replaceAllText", {}).get("occurrencesChanged", 0)
+    return {"id": document_id, "occurrences_changed": occurrences}
