@@ -83,3 +83,87 @@ def apply_text_style(
         }}]},
     ).execute()
     return {"id": document_id, "status": f"Applied text style to range {start_index}–{end_index}."}
+
+
+_NAMED_STYLES = {
+    "TITLE", "SUBTITLE",
+    "HEADING_1", "HEADING_2", "HEADING_3",
+    "HEADING_4", "HEADING_5", "HEADING_6",
+    "NORMAL_TEXT",
+}
+_ALIGNMENTS = {"START", "CENTER", "END", "JUSTIFIED"}
+
+
+@mcp.tool()
+@tool_errors
+def apply_paragraph_style(
+    document_id: str,
+    start_index: int,
+    end_index: int,
+    named_style: Optional[str] = None,
+    alignment: Optional[str] = None,
+    line_spacing: Optional[float] = None,
+    indent_first_line_pt: Optional[float] = None,
+    indent_start_pt: Optional[float] = None,
+    space_above_pt: Optional[float] = None,
+    space_below_pt: Optional[float] = None,
+    keep_with_next: Optional[bool] = None,
+) -> dict:
+    """
+    Apply paragraph styling to a range.
+
+    Args:
+        named_style: One of TITLE, SUBTITLE, HEADING_1..6, NORMAL_TEXT.
+                     Applies Google Docs' built-in named style — best for
+                     ensuring a polished, consistent visual hierarchy.
+        alignment: START | CENTER | END | JUSTIFIED.
+        line_spacing: Multiplier. 1.0=single, 1.15, 1.5, 2.0 typical.
+        indent_first_line_pt, indent_start_pt: Indentation in points.
+        space_above_pt, space_below_pt: Paragraph spacing in points.
+        keep_with_next: Prevent page break between this paragraph and the next.
+    """
+    style: dict = {}
+    fields: list[str] = []
+
+    if named_style is not None:
+        if named_style not in _NAMED_STYLES:
+            raise ValueError(f"named_style must be one of {sorted(_NAMED_STYLES)}; got {named_style!r}")
+        style["namedStyleType"] = named_style
+        fields.append("namedStyleType")
+    if alignment is not None:
+        if alignment not in _ALIGNMENTS:
+            raise ValueError(f"alignment must be one of {sorted(_ALIGNMENTS)}; got {alignment!r}")
+        style["alignment"] = alignment
+        fields.append("alignment")
+    if line_spacing is not None:
+        # Docs API expects percentage: 1.5x = 150
+        style["lineSpacing"] = float(line_spacing) * 100
+        fields.append("lineSpacing")
+    if indent_first_line_pt is not None:
+        style["indentFirstLine"] = pt(indent_first_line_pt)
+        fields.append("indentFirstLine")
+    if indent_start_pt is not None:
+        style["indentStart"] = pt(indent_start_pt)
+        fields.append("indentStart")
+    if space_above_pt is not None:
+        style["spaceAbove"] = pt(space_above_pt)
+        fields.append("spaceAbove")
+    if space_below_pt is not None:
+        style["spaceBelow"] = pt(space_below_pt)
+        fields.append("spaceBelow")
+    if keep_with_next is not None:
+        style["keepWithNext"] = keep_with_next
+        fields.append("keepWithNext")
+
+    if not fields:
+        return {"id": document_id, "status": "No style changes specified."}
+
+    docs().documents().batchUpdate(
+        documentId=document_id,
+        body={"requests": [{"updateParagraphStyle": {
+            "range": {"startIndex": start_index, "endIndex": end_index},
+            "paragraphStyle": style,
+            "fields": ",".join(fields),
+        }}]},
+    ).execute()
+    return {"id": document_id, "status": f"Applied paragraph style to range {start_index}–{end_index}."}
