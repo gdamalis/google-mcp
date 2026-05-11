@@ -363,6 +363,78 @@ def _handle_heading(state: _State, tokens: list[Token], i: int) -> int:
     return i + 3  # skip heading_close
 
 
+def _handle_table(state: _State, tokens: list[Token], i: int) -> int:
+    """
+    GFM table. Tokens: table_open, thead_open, tr_open, th_open*, th_close,
+    tr_close, thead_close, tbody_open, (tr_open, td_open*, td_close, tr_close)*,
+    tbody_close, table_close.
+
+    Emits insertTable + a _pending_table sentinel to be processed after re-reading
+    the doc to learn cell indices.
+    """
+    cells: list[dict] = []
+    rows = 0
+    cols = 0
+
+    j = i + 1
+    current_row_cells = 0
+    in_header = False
+    while j < len(tokens) and tokens[j].type != "table_close":
+        t = tokens[j].type
+        if t == "thead_open":
+            in_header = True
+        elif t == "thead_close":
+            in_header = False
+        elif t == "tr_open":
+            current_row_cells = 0
+        elif t == "tr_close":
+            if rows == 0:
+                cols = current_row_cells
+            rows += 1
+        elif t in ("th_open", "td_open"):
+            # Find the inline token within this cell
+            k = j + 1
+            while tokens[k].type != "inline":
+                k += 1
+            cell_text = tokens[k].content
+            cells.append({
+                "text": cell_text,
+                "row": rows,
+                "col": current_row_cells,
+                "header": in_header,
+            })
+            current_row_cells += 1
+            # Advance j to the matching th_close / td_close
+            close_token = "th_close" if t == "th_open" else "td_close"
+            while tokens[j].type != close_token:
+                j += 1
+        j += 1
+
+    table_insert_index = state.cursor
+    state.requests.append({
+        "insertTable": {
+            "location": {"index": table_insert_index},
+            "rows": rows,
+            "columns": cols,
+        }
+    })
+    state.requests.append({
+        "_pending_table": {
+            "insert_index": table_insert_index,
+            "rows": rows,
+            "cols": cols,
+            "cells": cells,
+            "header_row": 0,
+        }
+    })
+    # Approximate cursor advance. Post-processor re-reads exact indices,
+    # so this only matters if more markdown content follows the table in
+    # the same transformer call.
+    state.cursor += 1 + rows * cols * 2 + 1
+
+    return j + 1
+
+
 def markdown_to_requests(markdown: str, insert_index: int = 1) -> list[dict]:
     """
     Convert markdown source to a list of Docs API batchUpdate requests.
@@ -395,6 +467,8 @@ def markdown_to_requests(markdown: str, insert_index: int = 1) -> list[dict]:
             i = _handle_blockquote(state, tokens, i)
         elif tok.type == "hr":
             i = _handle_hr(state, tokens, i)
+        elif tok.type == "table_open":
+            i = _handle_table(state, tokens, i)
         else:
             logger.debug("Skipping unhandled token: %s", tok.type)
             i += 1
@@ -405,11 +479,101 @@ def markdown_to_requests(markdown: str, insert_index: int = 1) -> list[dict]:
 def render_markdown_to_doc(service: Any, document_id: str, markdown: str,
                            insert_index: int = 1) -> dict:
     """
-    Convenience: build requests + send batchUpdate. Returns the API response.
+    Build requests + send batchUpdates, handling tables in a second pass.
     """
     requests = markdown_to_requests(markdown, insert_index=insert_index)
     if not requests:
         return {"replies": [], "documentId": document_id}
-    return service.documents().batchUpdate(
-        documentId=document_id, body={"requests": requests}
-    ).execute()
+
+    # If there are no table sentinels, send the whole batch as-is.
+    if not any("_pending_table" in r for r in requests):
+        return service.documents().batchUpdate(
+            documentId=document_id, body={"requests": requests}
+        ).execute()
+
+    # Split: send pre-table requests + insertTable, then re-read, then populate cells.
+    response: dict = {"replies": [], "documentId": document_id}
+    pending: list[dict] = []
+    for req in requests:
+        if "_pending_table" in req:
+            # Flush pending real requests (includes the insertTable that precedes this sentinel)
+            if pending:
+                r = service.documents().batchUpdate(
+                    documentId=document_id, body={"requests": pending}
+                ).execute()
+                response["replies"].extend(r.get("replies", []))
+                pending = []
+            # Re-read doc to find the just-inserted table
+            doc = service.documents().get(documentId=document_id).execute()
+            cell_requests = _build_cell_fill_requests(doc, req["_pending_table"])
+            if cell_requests:
+                r = service.documents().batchUpdate(
+                    documentId=document_id, body={"requests": cell_requests}
+                ).execute()
+                response["replies"].extend(r.get("replies", []))
+        else:
+            pending.append(req)
+
+    if pending:
+        r = service.documents().batchUpdate(
+            documentId=document_id, body={"requests": pending}
+        ).execute()
+        response["replies"].extend(r.get("replies", []))
+
+    return response
+
+
+def _build_cell_fill_requests(doc: dict, pending: dict) -> list[dict]:
+    """
+    Find the table at pending['insert_index'] in `doc`, then build insertText
+    requests for each cell PLUS bold styling for the header row.
+    """
+    table = None
+    for element in doc.get("body", {}).get("content", []):
+        if element.get("startIndex") == pending["insert_index"] and "table" in element:
+            table = element["table"]
+            break
+    if table is None:
+        # Fallback: take the last table in the document.
+        for element in reversed(doc.get("body", {}).get("content", [])):
+            if "table" in element:
+                table = element["table"]
+                break
+    if table is None:
+        return []
+
+    # Build cell index map [row][col] -> first content index inside the cell
+    cell_first_index: list[list[int]] = []
+    for row in table.get("tableRows", []):
+        row_indices = []
+        for cell in row.get("tableCells", []):
+            first = cell.get("content", [{}])[0]
+            row_indices.append(first.get("startIndex", cell.get("startIndex", 0) + 1))
+        cell_first_index.append(row_indices)
+
+    requests = []
+    # Insert text into each cell IN REVERSE ORDER (so earlier inserts don't
+    # shift later indices). Reverse over rows AND columns.
+    sorted_cells = sorted(pending["cells"], key=lambda c: (c["row"], c["col"]), reverse=True)
+    for c in sorted_cells:
+        idx = cell_first_index[c["row"]][c["col"]]
+        if c["text"]:
+            requests.append({
+                "insertText": {"location": {"index": idx}, "text": c["text"]},
+            })
+
+    # Style header row: bold
+    if pending["cells"]:
+        header_cells = [c for c in pending["cells"] if c["row"] == pending["header_row"]]
+        for c in header_cells:
+            idx = cell_first_index[c["row"]][c["col"]]
+            if c["text"]:
+                requests.append({
+                    "updateTextStyle": {
+                        "range": {"startIndex": idx, "endIndex": idx + len(c["text"])},
+                        "textStyle": {"bold": True},
+                        "fields": "bold",
+                    }
+                })
+
+    return requests

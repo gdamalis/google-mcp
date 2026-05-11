@@ -165,3 +165,27 @@ class TestImages:
         img_reqs = [r for r in reqs if "insertInlineImage" in r]
         # Local paths cannot be inserted via Docs API directly — skip with a log.
         assert len(img_reqs) == 0
+
+
+class TestTables:
+    def test_table_emits_insert_table(self):
+        md = "| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |"
+        reqs = markdown_to_requests(md, insert_index=1)
+        # Expect one insertTable request with rows=3 (header + 2 body), columns=2
+        table_reqs = [r for r in reqs if "insertTable" in r]
+        assert len(table_reqs) == 1
+        assert table_reqs[0]["insertTable"]["rows"] == 3
+        assert table_reqs[0]["insertTable"]["columns"] == 2
+
+    def test_table_cell_data_in_pending(self):
+        """Cell text is collected as 'pending_cell_inserts' on the result list — it's
+        a sentinel dict with no top-level Docs API key, processed by
+        render_markdown_to_doc after a re-read."""
+        md = "| a | b |\n|---|---|\n| 1 | 2 |"
+        reqs = markdown_to_requests(md, insert_index=1)
+        pending = [r for r in reqs if r.get("_pending_table")]
+        assert len(pending) == 1
+        cells = pending[0]["_pending_table"]["cells"]
+        # 2 rows × 2 cols = 4 cells, row-major: a, b, 1, 2
+        assert [c["text"] for c in cells] == ["a", "b", "1", "2"]
+        assert pending[0]["_pending_table"]["header_row"] == 0
