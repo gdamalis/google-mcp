@@ -178,3 +178,110 @@ def update_page_setup(
         }}]},
     ).execute()
     return {"id": document_id, "status": "Page setup updated."}
+
+
+@mcp.tool()
+@tool_errors
+def update_header_footer(
+    document_id: str,
+    header_markdown: Optional[str] = None,
+    footer_markdown: Optional[str] = None,
+    include_page_numbers: bool = False,
+    first_page_different: bool = False,
+) -> dict:
+    """
+    Set the document header and/or footer.
+
+    Note: The Docs API does NOT support inserting auto-updating page numbers.
+    When `include_page_numbers=True`, the literal text " Page " is appended
+    to the footer (or header if no footer_markdown) as a placeholder. To get
+    a live page number, the user must add it via Insert > Page Number in the
+    Google Docs UI after this call.
+
+    Args:
+        header_markdown: Plain text or simple markdown for the header.
+                         Full markdown rendering inside headers is limited by
+                         the Docs API; complex markdown may not work.
+        footer_markdown: Same for footer.
+        include_page_numbers: Adds " Page " text placeholder.
+        first_page_different: First page has its own header/footer.
+    """
+    service = docs()
+
+    if first_page_different:
+        service.documents().batchUpdate(
+            documentId=document_id,
+            body={"requests": [{"updateDocumentStyle": {
+                "documentStyle": {"useFirstPageHeaderFooter": True},
+                "fields": "useFirstPageHeaderFooter",
+            }}]},
+        ).execute()
+
+    doc = service.documents().get(documentId=document_id).execute()
+    header_id = doc.get("documentStyle", {}).get("defaultHeaderId")
+    footer_id = doc.get("documentStyle", {}).get("defaultFooterId")
+
+    if header_markdown is not None and header_id is None:
+        r = service.documents().batchUpdate(
+            documentId=document_id,
+            body={"requests": [{"createHeader": {"type": "DEFAULT"}}]},
+        ).execute()
+        header_id = r["replies"][0]["createHeader"]["headerId"]
+
+    if (footer_markdown is not None or include_page_numbers) and footer_id is None:
+        r = service.documents().batchUpdate(
+            documentId=document_id,
+            body={"requests": [{"createFooter": {"type": "DEFAULT"}}]},
+        ).execute()
+        footer_id = r["replies"][0]["createFooter"]["footerId"]
+
+    def _fill_segment(segment_id: str, markdown: str, *, with_page_number: bool = False) -> None:
+        d = service.documents().get(documentId=document_id).execute()
+        segments = d.get("headers", {}) if segment_id == header_id else d.get("footers", {})
+        seg = segments.get(segment_id)
+        if not seg:
+            return
+        content = seg.get("content", [])
+        if content:
+            seg_end = content[-1]["endIndex"]
+            if seg_end > 1:
+                service.documents().batchUpdate(
+                    documentId=document_id,
+                    body={"requests": [{"deleteContentRange": {
+                        "range": {
+                            "segmentId": segment_id,
+                            "startIndex": 0,
+                            "endIndex": seg_end - 1,
+                        },
+                    }}]},
+                ).execute()
+        if markdown:
+            service.documents().batchUpdate(
+                documentId=document_id,
+                body={"requests": [{"insertText": {
+                    "location": {"segmentId": segment_id, "index": 0},
+                    "text": markdown,
+                }}]},
+            ).execute()
+        if with_page_number:
+            d = service.documents().get(documentId=document_id).execute()
+            segments = d.get("headers", {}) if segment_id == header_id else d.get("footers", {})
+            seg = segments.get(segment_id, {})
+            content = seg.get("content", [])
+            end = content[-1]["endIndex"] - 1 if content else 0
+            service.documents().batchUpdate(
+                documentId=document_id,
+                body={"requests": [
+                    {"insertText": {
+                        "location": {"segmentId": segment_id, "index": end},
+                        "text": " Page ",
+                    }},
+                ]},
+            ).execute()
+
+    if header_markdown is not None and header_id:
+        _fill_segment(header_id, header_markdown)
+    if (footer_markdown is not None or include_page_numbers) and footer_id:
+        _fill_segment(footer_id, footer_markdown or "", with_page_number=include_page_numbers)
+
+    return {"id": document_id, "status": "Header/footer updated."}
