@@ -242,3 +242,125 @@ class TestKitchenSink:
         assert "createParagraphBullets" in types_present
         assert "insertTable" in types_present
         assert "insertInlineImage" in types_present
+
+
+class TestRegressionBugs:
+    """Regression tests for bugs found during end-to-end smoke verification."""
+
+    def test_code_block_background_color_has_optional_color_shape(self):
+        """Regression: shading.backgroundColor must be a full OptionalColor
+        ({color: {rgbColor: {...}}}), not just the inner {rgbColor: {...}}.
+        The Docs API rejects the inner-only form with 'Unknown name rgbColor'.
+        Bug fix: _CODE_BG was being unwrapped to _CODE_BG['color'] before use."""
+        md = "```\nfoo\n```"
+        reqs = markdown_to_requests(md, insert_index=1)
+        para_reqs = [r for r in reqs if "updateParagraphStyle" in r]
+        shaded = [r for r in para_reqs
+                  if r["updateParagraphStyle"]["paragraphStyle"].get("shading", {}).get("backgroundColor")]
+        assert len(shaded) >= 1, "code block should produce a shaded paragraph"
+        bg = shaded[0]["updateParagraphStyle"]["paragraphStyle"]["shading"]["backgroundColor"]
+        # Must have outer 'color' wrapper — this is what OptionalColor requires.
+        assert "color" in bg, f"backgroundColor must be OptionalColor with 'color' wrapper; got {bg!r}"
+        assert "rgbColor" in bg["color"], f"OptionalColor.color must contain rgbColor; got {bg!r}"
+        # Inner rgbColor must have the three components.
+        rgb = bg["color"]["rgbColor"]
+        assert "red" in rgb and "green" in rgb and "blue" in rgb
+
+
+class TestPostTableShift:
+    """Indices in requests AFTER a table need to be adjusted from the
+    transformer's approximation to the real post-table doc position."""
+
+    def test_shift_indices_helper(self):
+        from tools.docs._markdown import _shift_indices
+        requests = [
+            {"insertText": {"location": {"index": 100}, "text": "hi"}},
+            {"updateTextStyle": {
+                "range": {"startIndex": 100, "endIndex": 102},
+                "textStyle": {"bold": True},
+                "fields": "bold",
+            }},
+            {"insertInlineImage": {"location": {"index": 105}, "uri": "x"}},
+        ]
+        _shift_indices(requests, shift=7)
+        assert requests[0]["insertText"]["location"]["index"] == 107
+        assert requests[1]["updateTextStyle"]["range"]["startIndex"] == 107
+        assert requests[1]["updateTextStyle"]["range"]["endIndex"] == 109
+        assert requests[2]["insertInlineImage"]["location"]["index"] == 112
+
+    def test_shift_does_not_corrupt_non_index_ints(self):
+        """rgbColor values, magnitudes, etc. are ints/floats — must not be shifted."""
+        from tools.docs._markdown import _shift_indices
+        requests = [{"updateParagraphStyle": {
+            "range": {"startIndex": 10, "endIndex": 20},
+            "paragraphStyle": {
+                "shading": {"backgroundColor": {"color": {"rgbColor": {"red": 0, "green": 0, "blue": 0}}}},
+                "indentStart": {"magnitude": 10, "unit": "PT"},
+            },
+            "fields": "shading.backgroundColor,indentStart",
+        }}]
+        _shift_indices(requests, shift=5)
+        rng = requests[0]["updateParagraphStyle"]["range"]
+        assert rng["startIndex"] == 15
+        assert rng["endIndex"] == 25
+        # rgb and magnitude untouched
+        rgb = requests[0]["updateParagraphStyle"]["paragraphStyle"]["shading"]["backgroundColor"]["color"]["rgbColor"]
+        assert rgb == {"red": 0, "green": 0, "blue": 0}
+        mag = requests[0]["updateParagraphStyle"]["paragraphStyle"]["indentStart"]["magnitude"]
+        assert mag == 10
+
+
+class TestBulletWhitespaceConsumption:
+    """Regression: createParagraphBullets consumes leading \\t chars from each
+    paragraph in its range (uses them to compute nesting level, strips from
+    content). The transformer must track this shrinkage so subsequent inserts
+    use post-bullet indices.
+
+    The bug manifested as 'Index N must be less than end index of segment N-X'
+    when content appeared after a list with nested items."""
+
+    def test_nested_list_then_paragraph_indices_align(self):
+        md = (
+            "- a\n"
+            "  - nested-a\n"
+            "  - nested-b\n"
+            "- b\n"
+            "\n"
+            "after\n"
+        )
+        reqs = markdown_to_requests(md, insert_index=1)
+
+        # Find createParagraphBullets and the request right after
+        bullet_idx = next(i for i, r in enumerate(reqs) if "createParagraphBullets" in r)
+        # Find the next insertText after the bullets request — its index must
+        # reflect the post-consumption position.
+        next_insert = None
+        for r in reqs[bullet_idx + 1:]:
+            if "insertText" in r:
+                next_insert = r
+                break
+        assert next_insert is not None, "expected insertText for 'after' paragraph"
+
+        # Bullets range
+        rng = reqs[bullet_idx]["createParagraphBullets"]["range"]
+        list_end = rng["endIndex"]
+
+        # Two nested items each have a single \t prefix → 2 tabs consumed.
+        # So the post-bullet cursor should be list_end - 2.
+        next_index = next_insert["insertText"]["location"]["index"]
+        assert next_index == list_end - 2, (
+            f"after-list insertText should be at list_end - 2 = {list_end - 2}, "
+            f"got {next_index}"
+        )
+
+    def test_no_nesting_no_shrinkage(self):
+        """If no items have \\t prefix, no shrinkage should occur."""
+        md = "- one\n- two\n\nafter\n"
+        reqs = markdown_to_requests(md, insert_index=1)
+        bullet_idx = next(i for i, r in enumerate(reqs) if "createParagraphBullets" in r)
+        rng = reqs[bullet_idx]["createParagraphBullets"]["range"]
+        next_insert = next(
+            r for r in reqs[bullet_idx + 1:] if "insertText" in r
+        )
+        # No nested items → no tabs consumed → next insert at list_end.
+        assert next_insert["insertText"]["location"]["index"] == rng["endIndex"]

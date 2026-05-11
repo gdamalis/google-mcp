@@ -200,25 +200,48 @@ def _handle_list(state: _State, tokens: list[Token], i: int, depth: int = 0) -> 
     """
     open_token = tokens[i]
     ordered = open_token.type == "ordered_list_open"
+    close_type = "ordered_list_close" if ordered else "bullet_list_close"
 
-    # Detect checkbox list by scanning items
+    # Detect checkbox list: scan top-level items only (nested lists' items don't
+    # count). Track depth to skip over nested list tokens.
     is_checkbox = False
     j = i + 1
-    close_type = "ordered_list_close" if ordered else "bullet_list_close"
-    while j < len(tokens) and tokens[j].type != close_type:
-        if tokens[j].type == "list_item_open":
+    nested = 0
+    while j < len(tokens):
+        t = tokens[j].type
+        if t == close_type and nested == 0:
+            break
+        if t in ("bullet_list_open", "ordered_list_open"):
+            nested += 1
+        elif t in ("bullet_list_close", "ordered_list_close"):
+            nested -= 1
+        if nested == 0 and t == "list_item_open":
+            # Find the FIRST inline within this item (not within nested lists)
             k = j + 1
-            while k < len(tokens) and tokens[k].type != "list_item_close":
-                if tokens[k].type == "inline" and _is_checkbox_item(tokens[k]):
+            inner_nested = 0
+            while k < len(tokens):
+                tt = tokens[k].type
+                if tt == "list_item_close" and inner_nested == 0:
+                    break
+                if tt in ("bullet_list_open", "ordered_list_open"):
+                    inner_nested += 1
+                elif tt in ("bullet_list_close", "ordered_list_close"):
+                    inner_nested -= 1
+                if inner_nested == 0 and tt == "inline" and _is_checkbox_item(tokens[k]):
                     is_checkbox = True
                     break
                 k += 1
-        if is_checkbox:
-            break
+            if is_checkbox:
+                break
         j += 1
 
     preset_key = "checkbox" if is_checkbox else ("ordered" if ordered else "bullet")
     preset = _BULLET_PRESETS[preset_key]
+
+    # Track requests added during this list so we can count tabs consumed by
+    # createParagraphBullets and adjust the cursor accordingly. Only the
+    # outermost (depth=0) call emits the bullet request and the adjustment.
+    requests_start = len(state.requests) if depth == 0 else None
 
     list_start = state.cursor
 
@@ -258,10 +281,25 @@ def _handle_list(state: _State, tokens: list[Token], i: int, depth: int = 0) -> 
                 "bulletPreset": preset,
             }
         })
+        # createParagraphBullets CONSUMES the leading whitespace (\t chars) of
+        # each paragraph in the range — uses it to compute nesting level, then
+        # strips it from content. The document shrinks by the total consumed
+        # whitespace, so the cursor needs to track the post-shrink state for
+        # subsequent inserts.
+        consumed = sum(
+            len(r["insertText"]["text"])
+            for r in state.requests[requests_start:]
+            if "insertText" in r
+            and r["insertText"]["text"]
+            and all(ch == "\t" for ch in r["insertText"]["text"])
+        )
+        if consumed:
+            state.cursor -= consumed
 
     return j + 1  # skip list_close
 
 
+# OptionalColor shape: {"color": {"rgbColor": {...}}} — full wrapper required by Docs API.
 _CODE_BG = {"color": {"rgbColor": {"red": 0.953, "green": 0.953, "blue": 0.953}}}  # #f3f3f3
 
 
@@ -280,7 +318,7 @@ def _handle_code_block(state: _State, tokens: list[Token], i: int) -> int:
     state.style_paragraph(
         start, end,
         {
-            "shading": {"backgroundColor": _CODE_BG["color"]},
+            "shading": {"backgroundColor": _CODE_BG},
             "indentStart": {"magnitude": 10, "unit": "PT"},
             "indentEnd": {"magnitude": 10, "unit": "PT"},
         },
@@ -480,30 +518,43 @@ def render_markdown_to_doc(service: Any, document_id: str, markdown: str,
                            insert_index: int = 1) -> dict:
     """
     Build requests + send batchUpdates, handling tables in a second pass.
+
+    Tables require special handling because the Docs API allocates cell indices
+    on insertion (we can't predict them) AND the actual byte-width of the table
+    differs from our approximation in `_handle_table`. So:
+
+      1. Flush all requests up to and including the `insertTable` (one batch).
+      2. Re-read the doc, build cell-fill requests using real cell indices,
+         and compute the shift between approximated and real post-table cursor.
+      3. Apply that shift to ALL remaining queued requests so their indices
+         line up with the real doc state.
+      4. Continue.
     """
     requests = markdown_to_requests(markdown, insert_index=insert_index)
     if not requests:
         return {"replies": [], "documentId": document_id}
 
-    # If there are no table sentinels, send the whole batch as-is.
+    # Fast path: no tables → single atomic batch.
     if not any("_pending_table" in r for r in requests):
         return service.documents().batchUpdate(
             documentId=document_id, body={"requests": requests}
         ).execute()
 
-    # Split: send pre-table requests + insertTable, then re-read, then populate cells.
     response: dict = {"replies": [], "documentId": document_id}
     pending: list[dict] = []
-    for req in requests:
+    i = 0
+    while i < len(requests):
+        req = requests[i]
         if "_pending_table" in req:
-            # Flush pending real requests (includes the insertTable that precedes this sentinel)
+            # Flush real requests so far (includes the insertTable that precedes this sentinel)
             if pending:
                 r = service.documents().batchUpdate(
                     documentId=document_id, body={"requests": pending}
                 ).execute()
                 response["replies"].extend(r.get("replies", []))
                 pending = []
-            # Re-read doc to find the just-inserted table
+
+            # Re-read doc to find the just-inserted table's real position
             doc = service.documents().get(documentId=document_id).execute()
             cell_requests = _build_cell_fill_requests(doc, req["_pending_table"])
             if cell_requests:
@@ -511,8 +562,17 @@ def render_markdown_to_doc(service: Any, document_id: str, markdown: str,
                     documentId=document_id, body={"requests": cell_requests}
                 ).execute()
                 response["replies"].extend(r.get("replies", []))
+
+            # Compute index shift: actual post-table index vs approximation.
+            real_post_table = _find_post_table_end_index(doc, req["_pending_table"])
+            pt = req["_pending_table"]
+            approximated_post_table = pt["insert_index"] + 1 + pt["rows"] * pt["cols"] * 2 + 1
+            shift = real_post_table - approximated_post_table
+            if shift != 0 and i + 1 < len(requests):
+                _shift_indices(requests[i + 1:], shift)
         else:
             pending.append(req)
+        i += 1
 
     if pending:
         r = service.documents().batchUpdate(
@@ -521,6 +581,41 @@ def render_markdown_to_doc(service: Any, document_id: str, markdown: str,
         response["replies"].extend(r.get("replies", []))
 
     return response
+
+
+def _find_post_table_end_index(doc: dict, pending: dict) -> int:
+    """Return the actual endIndex of the just-inserted table (i.e., where
+    content after the table now begins)."""
+    insert_index = pending["insert_index"]
+    for element in doc.get("body", {}).get("content", []):
+        if element.get("startIndex") == insert_index and "table" in element:
+            return element["endIndex"]
+    # Fallback: take the last table in the document.
+    for element in reversed(doc.get("body", {}).get("content", [])):
+        if "table" in element:
+            return element["endIndex"]
+    return insert_index + 1
+
+
+def _shift_indices(requests: list[dict], shift: int) -> None:
+    """In-place: shift any `index`/`startIndex`/`endIndex` field by `shift`,
+    recursively. Used to keep post-table requests aligned with real doc state
+    after a table insertion completes."""
+    _INDEX_KEYS = ("index", "startIndex", "endIndex")
+
+    def walk(obj):
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                if k in _INDEX_KEYS and isinstance(v, int):
+                    obj[k] = v + shift
+                else:
+                    walk(v)
+        elif isinstance(obj, list):
+            for item in obj:
+                walk(item)
+
+    for req in requests:
+        walk(req)
 
 
 def _build_cell_fill_requests(doc: dict, pending: dict) -> list[dict]:
