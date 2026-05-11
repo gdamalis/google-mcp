@@ -66,3 +66,59 @@ class TestReaderBasic:
             "click\n", text_style={"link": {"url": "https://example.com"}}
         )])
         assert docs_to_markdown(doc).strip() == "[click](https://example.com)"
+
+
+def _bullet_paragraph(text, *, nesting_level=0, glyph="UNORDERED"):
+    """Build a paragraph that's part of a bullet list."""
+    return {
+        "paragraph": {
+            "paragraphStyle": {"namedStyleType": "NORMAL_TEXT"},
+            "bullet": {
+                "listId": "L1",
+                "nestingLevel": nesting_level,
+            },
+            "elements": [{"textRun": {"content": text, "textStyle": {}}}],
+        }
+    }
+
+
+class TestReaderLists:
+    def test_unordered_list(self):
+        doc = _doc_with([
+            _bullet_paragraph("one\n"),
+            _bullet_paragraph("two\n"),
+        ])
+        md = docs_to_markdown(doc)
+        assert "- one" in md
+        assert "- two" in md
+
+    def test_nested_unordered(self):
+        doc = _doc_with([
+            _bullet_paragraph("one\n", nesting_level=0),
+            _bullet_paragraph("nested\n", nesting_level=1),
+        ])
+        md = docs_to_markdown(doc)
+        assert "- one" in md
+        assert "  - nested" in md  # 2-space indent per level
+
+
+class TestReaderTables:
+    def test_simple_table(self):
+        doc = _doc_with([{
+            "table": {
+                "tableRows": [
+                    {"tableCells": [
+                        {"content": [_paragraph("a\n")]},
+                        {"content": [_paragraph("b\n")]},
+                    ]},
+                    {"tableCells": [
+                        {"content": [_paragraph("1\n")]},
+                        {"content": [_paragraph("2\n")]},
+                    ]},
+                ],
+            }
+        }])
+        md = docs_to_markdown(doc)
+        assert "| a | b |" in md
+        assert "| --- | --- |" in md
+        assert "| 1 | 2 |" in md

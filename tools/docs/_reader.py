@@ -69,20 +69,94 @@ def _render_paragraph(paragraph: dict) -> str:
     return prefix + body + "\n"
 
 
-def docs_to_markdown(document: dict) -> str:
-    """
-    Convert a Google Docs JSON document to markdown.
+def _render_bullet_line(paragraph: dict, document: dict) -> str:
+    """A paragraph that has a `bullet` field — render as a list item."""
+    bullet = paragraph.get("bullet") or {}
+    list_id = bullet.get("listId")
+    nesting = bullet.get("nestingLevel", 0)
 
-    Supports: paragraphs (incl. headings), inline styles (bold/italic/strike/code/link).
-    Lists and tables come in later tasks.
-    """
+    # Determine glyph from document.lists[listId].listProperties.nestingLevels[nesting].glyphType
+    glyph_type = "GLYPH_TYPE_UNSPECIFIED"
+    lists = document.get("lists", {})
+    if list_id and list_id in lists:
+        levels = lists[list_id].get("listProperties", {}).get("nestingLevels", [])
+        if nesting < len(levels):
+            glyph_type = levels[nesting].get("glyphType", glyph_type)
+
+    if glyph_type in ("DECIMAL", "ALPHA", "ROMAN", "UPPER_ALPHA", "UPPER_ROMAN"):
+        marker = "1. "
+    elif glyph_type == "GLYPH_TYPE_UNSPECIFIED" and list_id in lists:
+        # Try to detect checkbox by glyphSymbol
+        levels = lists[list_id].get("listProperties", {}).get("nestingLevels", [])
+        if nesting < len(levels) and levels[nesting].get("glyphSymbol") == "☐":
+            marker = "- [ ] "
+        else:
+            marker = "- "
+    else:
+        marker = "- "
+
+    inline_parts = []
+    for element in paragraph.get("elements", []):
+        text_run = element.get("textRun")
+        if text_run:
+            content = text_run.get("content", "")
+            style = text_run.get("textStyle", {})
+            if content.endswith("\n"):
+                inner = content[:-1]
+                inline_parts.append(_wrap_inline(inner, style))
+            else:
+                inline_parts.append(_wrap_inline(content, style))
+
+    indent = "  " * nesting
+    return f"{indent}{marker}{''.join(inline_parts)}\n"
+
+
+def _render_table(table: dict) -> str:
+    rows: list[list[str]] = []
+    for tr in table.get("tableRows", []):
+        cells: list[str] = []
+        for tc in tr.get("tableCells", []):
+            cell_text_parts = []
+            for content in tc.get("content", []):
+                p = content.get("paragraph")
+                if p:
+                    line = _render_paragraph(p)
+                    cell_text_parts.append(line.rstrip("\n"))
+            cells.append(" ".join(cell_text_parts).strip() or " ")
+        rows.append(cells)
+
+    if not rows:
+        return ""
+
+    col_count = max(len(r) for r in rows)
+    for r in rows:
+        while len(r) < col_count:
+            r.append(" ")
+
+    lines = [
+        "| " + " | ".join(rows[0]) + " |",
+        "| " + " | ".join(["---"] * col_count) + " |",
+    ]
+    for r in rows[1:]:
+        lines.append("| " + " | ".join(r) + " |")
+    return "\n".join(lines) + "\n"
+
+
+def docs_to_markdown(document: dict) -> str:
     content_elements = document.get("body", {}).get("content", [])
     out_lines: list[str] = []
     for element in content_elements:
         paragraph = element.get("paragraph")
         if paragraph:
-            out_lines.append(_render_paragraph(paragraph))
+            if paragraph.get("bullet"):
+                out_lines.append(_render_bullet_line(paragraph, document))
+            else:
+                out_lines.append(_render_paragraph(paragraph))
             continue
-        # tables, section breaks, etc. — added in Task 16
+        table = element.get("table")
+        if table:
+            out_lines.append(_render_table(table))
+            continue
+        # section breaks etc. ignored
 
     return "".join(out_lines)
