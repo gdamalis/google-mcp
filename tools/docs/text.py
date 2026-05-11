@@ -39,15 +39,15 @@ def _extract_text(document: dict) -> str:
 @tool_errors
 def read_doc(
     document_id: str,
-    format: Literal["markdown", "text", "json"] = "text",
+    format: Literal["markdown", "text", "json"] = "markdown",
 ) -> dict:
     """
     Read a Google Doc.
 
     Args:
         document_id: The Google Docs document ID.
-        format: "text" (current default — will flip to "markdown" in Task 17)
-                "markdown" (structured export via _reader.py)
+        format: "markdown" (default — structured export with headings, lists, bold, etc.)
+                "text" (legacy plain-text; preserves old behavior without formatting)
                 "json" (raw Docs structure with indices — use this before
                         calling apply_text_style or other index-based tools)
     """
