@@ -128,3 +128,34 @@ def style_table_cells(
         documentId=document_id, body={"requests": requests}
     ).execute()
     return {"id": document_id, "status": "Table cells styled."}
+
+
+@mcp.tool()
+@tool_errors
+def merge_table_cells(
+    document_id: str,
+    table_start_index: int,
+    row_start: int,
+    col_start: int,
+    row_end: int,
+    col_end: int,
+) -> dict:
+    """
+    Merge a rectangular block of cells. row_end and col_end are inclusive
+    0-based indices.
+    """
+    docs().documents().batchUpdate(
+        documentId=document_id,
+        body={"requests": [{"mergeTableCells": {
+            "tableRange": {
+                "tableCellLocation": {
+                    "tableStartLocation": {"index": table_start_index},
+                    "rowIndex": row_start,
+                    "columnIndex": col_start,
+                },
+                "rowSpan": row_end - row_start + 1,
+                "columnSpan": col_end - col_start + 1,
+            },
+        }}]},
+    ).execute()
+    return {"id": document_id, "status": f"Merged cells ({row_start},{col_start}) to ({row_end},{col_end})."}
