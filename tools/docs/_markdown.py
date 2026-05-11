@@ -240,6 +240,81 @@ def _handle_list(state: _State, tokens: list[Token], i: int, depth: int = 0) -> 
     return j + 1  # skip list_close
 
 
+_CODE_BG = {"color": {"rgbColor": {"red": 0.953, "green": 0.953, "blue": 0.953}}}  # #f3f3f3
+
+
+def _handle_code_block(state: _State, tokens: list[Token], i: int) -> int:
+    """Fenced code block (token type 'fence') or indented ('code_block')."""
+    tok = tokens[i]
+    code = tok.content
+    if not code.endswith("\n"):
+        code += "\n"
+    start, end = state.insert_text(code)
+    state.style_text(
+        start, end,
+        {"weightedFontFamily": {"fontFamily": "Roboto Mono"}},
+        "weightedFontFamily",
+    )
+    state.style_paragraph(
+        start, end,
+        {
+            "shading": {"backgroundColor": _CODE_BG["color"]},
+            "indentStart": {"magnitude": 10, "unit": "PT"},
+            "indentEnd": {"magnitude": 10, "unit": "PT"},
+        },
+        "shading.backgroundColor,indentStart,indentEnd",
+    )
+    return i + 1
+
+
+def _handle_blockquote(state: _State, tokens: list[Token], i: int) -> int:
+    """Tokens: blockquote_open, ... (may contain paragraphs), blockquote_close."""
+    quote_start = state.cursor
+    j = i + 1
+    while j < len(tokens) and tokens[j].type != "blockquote_close":
+        if tokens[j].type == "paragraph_open":
+            inline = tokens[j + 1]
+            # _render_inline includes trailing \n; don't double-add
+            _render_inline(state, inline)
+            j += 3
+        else:
+            j += 1
+    quote_end = state.cursor
+    if quote_end > quote_start:
+        state.style_paragraph(
+            quote_start, quote_end,
+            {
+                "indentStart": {"magnitude": 18, "unit": "PT"},
+                "borderLeft": {
+                    "color": {"color": {"rgbColor": {"red": 0.7, "green": 0.7, "blue": 0.7}}},
+                    "width": {"magnitude": 3, "unit": "PT"},
+                    "padding": {"magnitude": 8, "unit": "PT"},
+                    "dashStyle": "SOLID",
+                },
+            },
+            "indentStart,borderLeft",
+        )
+    return j + 1
+
+
+def _handle_hr(state: _State, tokens: list[Token], i: int) -> int:
+    """Horizontal rule: insert an empty paragraph with a bottom border."""
+    start, end = state.insert_text("\n")
+    state.style_paragraph(
+        start, end,
+        {
+            "borderBottom": {
+                "color": {"color": {"rgbColor": {"red": 0.7, "green": 0.7, "blue": 0.7}}},
+                "width": {"magnitude": 1, "unit": "PT"},
+                "padding": {"magnitude": 1, "unit": "PT"},
+                "dashStyle": "SOLID",
+            }
+        },
+        "borderBottom",
+    )
+    return i + 1
+
+
 def _handle_paragraph(state: _State, tokens: list[Token], i: int) -> int:
     """Tokens: paragraph_open, inline, paragraph_close."""
     inline = tokens[i + 1]
@@ -292,6 +367,12 @@ def markdown_to_requests(markdown: str, insert_index: int = 1) -> list[dict]:
             i = _handle_paragraph(state, tokens, i)
         elif tok.type in ("bullet_list_open", "ordered_list_open"):
             i = _handle_list(state, tokens, i)
+        elif tok.type in ("fence", "code_block"):
+            i = _handle_code_block(state, tokens, i)
+        elif tok.type == "blockquote_open":
+            i = _handle_blockquote(state, tokens, i)
+        elif tok.type == "hr":
+            i = _handle_hr(state, tokens, i)
         else:
             logger.debug("Skipping unhandled token: %s", tok.type)
             i += 1

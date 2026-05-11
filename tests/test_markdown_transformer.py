@@ -111,3 +111,37 @@ class TestLists:
         contents = "".join(r["insertText"]["text"] for r in text_reqs)
         assert "\tone-a\n" in contents
         assert "\tone-b\n" in contents
+
+
+class TestBlocks:
+    def test_fenced_code(self):
+        md = "```python\nprint('hi')\n```"
+        reqs = markdown_to_requests(md, insert_index=1)
+        text_reqs = [r for r in reqs if "insertText" in r]
+        contents = "".join(r["insertText"]["text"] for r in text_reqs)
+        assert "print('hi')" in contents
+
+        # Should apply Roboto Mono + background shading
+        text_styles = [r for r in reqs if "updateTextStyle" in r]
+        mono = [s for s in text_styles
+                if s["updateTextStyle"]["textStyle"].get("weightedFontFamily", {}).get("fontFamily") == "Roboto Mono"]
+        assert len(mono) >= 1
+
+        para_styles = [r for r in reqs if "updateParagraphStyle" in r]
+        shaded = [s for s in para_styles
+                  if s["updateParagraphStyle"]["paragraphStyle"].get("shading", {}).get("backgroundColor")]
+        assert len(shaded) >= 1
+
+    def test_blockquote(self):
+        reqs = markdown_to_requests("> quote me", insert_index=1)
+        para_styles = [r for r in reqs if "updateParagraphStyle" in r]
+        indented = [s for s in para_styles
+                    if s["updateParagraphStyle"]["paragraphStyle"].get("indentStart", {}).get("magnitude", 0) > 0]
+        assert len(indented) >= 1
+
+    def test_horizontal_rule(self):
+        reqs = markdown_to_requests("---", insert_index=1)
+        para_styles = [r for r in reqs if "updateParagraphStyle" in r]
+        with_border = [s for s in para_styles
+                       if s["updateParagraphStyle"]["paragraphStyle"].get("borderBottom")]
+        assert len(with_border) >= 1
