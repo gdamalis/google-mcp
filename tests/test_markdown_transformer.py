@@ -78,3 +78,36 @@ class TestParagraphsAndInline:
         ts = [r for r in reqs if "updateTextStyle" in r]
         links = [r for r in ts if r["updateTextStyle"]["textStyle"].get("link", {}).get("url") == "https://example.com"]
         assert len(links) == 1
+
+
+class TestLists:
+    def test_unordered_list(self):
+        md = "- one\n- two\n- three"
+        reqs = markdown_to_requests(md, insert_index=1)
+        text_reqs = [r for r in reqs if "insertText" in r]
+        contents = "".join(r["insertText"]["text"] for r in text_reqs)
+        assert "one" in contents and "two" in contents and "three" in contents
+
+        # One createParagraphBullets request covering the whole list range
+        bullet_reqs = [r for r in reqs if "createParagraphBullets" in r]
+        assert len(bullet_reqs) == 1
+        assert bullet_reqs[0]["createParagraphBullets"]["bulletPreset"] == "BULLET_DISC_CIRCLE_SQUARE"
+
+    def test_ordered_list(self):
+        reqs = markdown_to_requests("1. one\n2. two", insert_index=1)
+        bullet_reqs = [r for r in reqs if "createParagraphBullets" in r]
+        assert bullet_reqs[0]["createParagraphBullets"]["bulletPreset"] == "NUMBERED_DECIMAL_ALPHA_ROMAN"
+
+    def test_checkbox_list(self):
+        reqs = markdown_to_requests("- [ ] todo\n- [x] done", insert_index=1)
+        bullet_reqs = [r for r in reqs if "createParagraphBullets" in r]
+        assert bullet_reqs[0]["createParagraphBullets"]["bulletPreset"] == "BULLET_CHECKBOX"
+
+    def test_nested_list(self):
+        md = "- one\n  - one-a\n  - one-b\n- two"
+        reqs = markdown_to_requests(md, insert_index=1)
+        text_reqs = [r for r in reqs if "insertText" in r]
+        # Nested items get \t prefix per Docs API convention
+        contents = "".join(r["insertText"]["text"] for r in text_reqs)
+        assert "\tone-a\n" in contents
+        assert "\tone-b\n" in contents

@@ -141,6 +141,105 @@ def _render_inline(state: _State, inline_token: Token) -> int:
     return paragraph_end
 
 
+_BULLET_PRESETS = {
+    "bullet": "BULLET_DISC_CIRCLE_SQUARE",
+    "ordered": "NUMBERED_DECIMAL_ALPHA_ROMAN",
+    "checkbox": "BULLET_CHECKBOX",
+}
+
+
+def _is_checkbox_item(inline_token: Token) -> bool:
+    """Detect GFM task list items: `[ ]` or `[x]` at the start of inline content."""
+    children = inline_token.children or []
+    if not children or children[0].type != "text":
+        return False
+    text = children[0].content
+    return text.startswith(("[ ] ", "[x] ", "[X] "))
+
+
+def _strip_checkbox_marker(inline_token: Token) -> bool:
+    """Mutate the inline's first text child to remove the `[ ]`/`[x]` marker.
+    Returns True if a checkbox marker was found and stripped."""
+    children = inline_token.children or []
+    if not children or children[0].type != "text":
+        return False
+    text = children[0].content
+    for prefix in ("[ ] ", "[x] ", "[X] "):
+        if text.startswith(prefix):
+            children[0].content = text[len(prefix):]
+            return True
+    return False
+
+
+def _handle_list(state: _State, tokens: list[Token], i: int, depth: int = 0) -> int:
+    """
+    Handle bullet_list_open or ordered_list_open. Returns index of token after
+    the matching list_close. Supports nesting.
+    """
+    open_token = tokens[i]
+    ordered = open_token.type == "ordered_list_open"
+
+    # Detect checkbox list by scanning items
+    is_checkbox = False
+    j = i + 1
+    close_type = "ordered_list_close" if ordered else "bullet_list_close"
+    while j < len(tokens) and tokens[j].type != close_type:
+        if tokens[j].type == "list_item_open":
+            k = j + 1
+            while k < len(tokens) and tokens[k].type != "list_item_close":
+                if tokens[k].type == "inline" and _is_checkbox_item(tokens[k]):
+                    is_checkbox = True
+                    break
+                k += 1
+        if is_checkbox:
+            break
+        j += 1
+
+    preset_key = "checkbox" if is_checkbox else ("ordered" if ordered else "bullet")
+    preset = _BULLET_PRESETS[preset_key]
+
+    list_start = state.cursor
+
+    j = i + 1
+    while j < len(tokens) and tokens[j].type != close_type:
+        if tokens[j].type == "list_item_open":
+            # Process item: it contains paragraph(s) and possibly nested lists
+            k = j + 1
+            indent = "\t" * depth
+            while k < len(tokens) and tokens[k].type != "list_item_close":
+                if tokens[k].type == "paragraph_open":
+                    inline = tokens[k + 1]
+                    if is_checkbox:
+                        _strip_checkbox_marker(inline)
+                    # Insert indent, then inline content (which includes its own \n)
+                    if indent:
+                        state.insert_text(indent)
+                    _render_inline(state, inline)
+                    # NOTE: _render_inline already appends \n; no separate insert_text("\n") needed
+                    k += 3
+                elif tokens[k].type in ("bullet_list_open", "ordered_list_open"):
+                    k = _handle_list(state, tokens, k, depth=depth + 1)
+                else:
+                    k += 1
+            j = k + 1  # skip list_item_close
+        else:
+            j += 1
+
+    list_end = state.cursor
+
+    # Apply bullets to the full list range — but only at the top depth.
+    # Nested items are differentiated by their \t prefixes per Docs API convention.
+    if depth == 0 and list_end > list_start:
+        state.requests.append({
+            "createParagraphBullets": {
+                "range": {"startIndex": list_start, "endIndex": list_end},
+                "bulletPreset": preset,
+            }
+        })
+
+    return j + 1  # skip list_close
+
+
 def _handle_paragraph(state: _State, tokens: list[Token], i: int) -> int:
     """Tokens: paragraph_open, inline, paragraph_close."""
     inline = tokens[i + 1]
@@ -191,6 +290,8 @@ def markdown_to_requests(markdown: str, insert_index: int = 1) -> list[dict]:
             i = _handle_heading(state, tokens, i)
         elif tok.type == "paragraph_open":
             i = _handle_paragraph(state, tokens, i)
+        elif tok.type in ("bullet_list_open", "ordered_list_open"):
+            i = _handle_list(state, tokens, i)
         else:
             logger.debug("Skipping unhandled token: %s", tok.type)
             i += 1
