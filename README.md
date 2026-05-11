@@ -1,6 +1,6 @@
 # Google MCP Server
 
-A [Model Context Protocol](https://modelcontextprotocol.io) server for Claude Code that provides 33 tools across Gmail, Google Calendar, Google Docs, Google Sheets, and Google Drive. Supports multiple Google accounts via environment variable isolation.
+A [Model Context Protocol](https://modelcontextprotocol.io) server for Claude Code that provides 50 tools across Gmail, Google Calendar, Google Docs, Google Sheets, and Google Drive. Supports multiple Google accounts via environment variable isolation.
 
 ## Architecture
 
@@ -13,7 +13,7 @@ google/
 ├── tools/
 │   ├── gmail.py        # 13 tools — search, drafts, labels, trash
 │   ├── calendar.py     #  6 tools — events CRUD, calendar listing
-│   ├── docs.py         #  5 tools — search, read, create, edit
+│   ├── docs/          # 22 tools — search, read, create, edit, style, structure, media, tables, templates
 │   ├── sheets.py       #  6 tools — search, read, write, create
 │   └── drive.py        #  3 tools — folder browsing, file search
 └── accounts/
@@ -82,6 +82,20 @@ claude mcp add --transport stdio --scope user google-personal \
 
 Verify: `claude mcp list` should show the server as connected.
 
+### Re-authenticating after a scope change
+
+If you previously authenticated with this MCP and we've added new OAuth scopes
+(e.g. `drive.file` for image uploads and doc management), your existing tokens
+are no longer sufficient. Re-run the auth helper for each account:
+
+```bash
+ACCOUNT=personal uv run python authenticate.py
+ACCOUNT=work1 uv run python authenticate.py
+ACCOUNT=work2 uv run python authenticate.py
+```
+
+Each opens a browser to grant the new permissions.
+
 ## Tools
 
 ### Gmail
@@ -118,10 +132,27 @@ Verify: `claude mcp list` should show the server as connected.
 | Tool | Description |
 |---|---|
 | `search_docs` | Search Drive for Google Docs |
-| `read_doc` | Read document content as plain text |
-| `create_doc` | Create a new document with optional content |
-| `append_to_doc` | Append text to end of document |
-| `insert_in_doc` | Insert text at a specific index |
+| `read_doc` | Read document content as markdown (default), plain text, or raw JSON with indices |
+| `create_doc` | Create a new document (optionally with markdown or plain text content) |
+| `append_to_doc` | Append plain text to end |
+| `insert_in_doc` | Insert plain text at index |
+| `append_markdown` | Append markdown-rendered content (headings, lists, tables, images, code blocks, blockquotes) |
+| `replace_doc_markdown` | Replace entire body with markdown |
+| `replace_range_markdown` | Replace a range with markdown |
+| `find_and_replace` | Bulk text replacement across the doc |
+| `apply_text_style` | Bold/italic/strike/underline, font, size, foreground/background color, link over a range |
+| `apply_paragraph_style` | Named styles (TITLE, HEADING_1–6, etc.), alignment, line spacing, indentation, spacing |
+| `insert_page_break` | Force a page break |
+| `insert_horizontal_rule` | Insert a divider line |
+| `insert_section_break` | Insert section break (NEXT_PAGE or CONTINUOUS) |
+| `update_section_columns` | Set column count for a section (newspaper-style layout) |
+| `update_page_setup` | Margins, page size, orientation |
+| `update_header_footer` | Set header / footer content; page-number placeholder support |
+| `insert_image` | Embed image from URL or local file (local files uploaded to Drive) |
+| `style_table_cells` | Background color, text/vertical alignment, padding, borders on a cell range |
+| `merge_table_cells` | Merge a rectangular block of table cells |
+| `copy_doc_from_template` | Duplicate a doc (great for branded templates) |
+| `rename_doc` | Rename a doc |
 
 ### Sheets
 
@@ -169,6 +200,7 @@ claude mcp add --transport stdio --scope user google-myaccount \
 | `403 Insufficient Permission` | Scopes changed — delete `token.json` and re-run `authenticate.py` |
 | `ACCOUNT env var not set` | The server requires `ACCOUNT=name` to know which credentials to use |
 | `json_invalid` error in terminal | Don't run `server.py` directly — use `authenticate.py` for auth, Claude Code launches the server |
+| `Insufficient Permission` on image upload or rename | drive.file scope missing — re-run `authenticate.py` to grant it |
 
 ## Security
 
