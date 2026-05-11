@@ -77,3 +77,35 @@ def create_doc(
         "link": f"https://docs.google.com/document/d/{doc_id}/edit",
         "status": "Document created successfully.",
     }
+
+
+@mcp.tool()
+@tool_errors
+def copy_doc_from_template(template_id: str, new_title: str) -> dict:
+    """
+    Duplicate a Google Doc. Useful for branded templates (proposals, reports).
+
+    The new doc lives in the user's Drive. Requires drive.file scope.
+    """
+    new_file = drive().files().copy(
+        fileId=template_id,
+        body={"name": new_title},
+        fields="id, name, webViewLink",
+    ).execute()
+    return {
+        "id": new_file["id"],
+        "title": new_file["name"],
+        "link": new_file.get("webViewLink", f"https://docs.google.com/document/d/{new_file['id']}/edit"),
+    }
+
+
+@mcp.tool()
+@tool_errors
+def rename_doc(document_id: str, new_title: str) -> dict:
+    """Rename a Google Doc. Requires drive.file scope."""
+    f = drive().files().update(
+        fileId=document_id,
+        body={"name": new_title},
+        fields="id, name",
+    ).execute()
+    return {"id": f["id"], "title": f["name"]}
