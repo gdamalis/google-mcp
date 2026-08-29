@@ -46,6 +46,7 @@ def create_doc(
     title: str,
     markdown: Optional[str] = None,
     content: Optional[str] = None,
+    folder_id: Optional[str] = None,
 ) -> dict:
     """
     Create a new Google Doc.
@@ -57,6 +58,9 @@ def create_doc(
                   Supports headings, bold/italic/code, lists, tables, links,
                   images, code blocks, blockquotes, horizontal rules.
         content: Optional plain text to insert (legacy; prefer `markdown`).
+        folder_id: Optional destination folder. The Docs API always creates in
+                   My Drive root, so the doc is moved there afterwards. Accepts
+                   a shared drive ID to land at that drive's top level.
     """
     service = docs()
     doc = service.documents().create(body={"title": title}).execute()
@@ -71,12 +75,28 @@ def create_doc(
             body={"requests": [{"insertText": {"location": {"index": 1}, "text": content}}]},
         ).execute()
 
-    return {
+    result = {
         "id": doc_id,
         "title": title,
         "link": f"https://docs.google.com/document/d/{doc_id}/edit",
         "status": "Document created successfully.",
     }
+
+    if folder_id:
+        from googleapiclient.errors import HttpError
+        from tools.drive import move_to_folder
+        try:
+            moved = move_to_folder(doc_id, folder_id)
+            result["parents"] = moved.get("parents", [])
+        except HttpError as e:
+            # The doc exists either way. Say so, or the caller goes looking for
+            # a document it thinks was never created.
+            result["status"] = (
+                f"Document created in My Drive root, but moving it to {folder_id} "
+                f"failed ({e.status_code}: {e.reason}). Move it by hand or with move_file."
+            )
+
+    return result
 
 
 @mcp.tool()
