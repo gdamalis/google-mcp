@@ -24,6 +24,17 @@ def drive():
     return get_service("drive", "v3")
 
 
+def u16len(text: str) -> int:
+    """Length of `text` in UTF-16 code units, which is how the Docs API counts.
+
+    Python measures strings in code points, so anything outside the BMP —
+    most emoji — is one short per character. Use this for every index
+    calculation sent to the API; plain len() silently desynchronizes the
+    cursor and everything after the emoji lands in the wrong place.
+    """
+    return len(text.encode("utf-16-le")) // 2
+
+
 def tool_errors(fn: Callable) -> Callable:
     """
     Decorator: convert HttpError into {"error": "..."} dict.

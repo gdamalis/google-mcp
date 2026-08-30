@@ -15,6 +15,8 @@ from typing import Any
 from markdown_it import MarkdownIt
 from markdown_it.token import Token
 
+from ._common import u16len
+
 logger = logging.getLogger(__name__)
 
 
@@ -30,7 +32,7 @@ class _State:
         self.requests.append({
             "insertText": {"location": {"index": start}, "text": text}
         })
-        self.cursor += len(text)
+        self.cursor += u16len(text)
         return start, self.cursor
 
     def style_paragraph(self, start: int, end: int, style: dict, fields: str) -> None:
@@ -97,7 +99,7 @@ def _render_inline(state: _State, inline_token: Token) -> int:
         if child.type == "text":
             rel_start = rel_cursor
             plain_parts.append(child.content)
-            rel_cursor += len(child.content)
+            rel_cursor += u16len(child.content)
             style, fields = active_style()
             if style:
                 pending_styles.append((rel_start, rel_cursor, style, fields))
@@ -122,7 +124,7 @@ def _render_inline(state: _State, inline_token: Token) -> int:
         elif child.type == "code_inline":
             rel_start = rel_cursor
             plain_parts.append(child.content)
-            rel_cursor += len(child.content)
+            rel_cursor += u16len(child.content)
             pending_styles.append((
                 rel_start, rel_cursor,
                 {"weightedFontFamily": {"fontFamily": "Roboto Mono"}},
@@ -287,7 +289,7 @@ def _handle_list(state: _State, tokens: list[Token], i: int, depth: int = 0) -> 
         # whitespace, so the cursor needs to track the post-shrink state for
         # subsequent inserts.
         consumed = sum(
-            len(r["insertText"]["text"])
+            u16len(r["insertText"]["text"])
             for r in state.requests[requests_start:]
             if "insertText" in r
             and r["insertText"]["text"]
@@ -672,7 +674,7 @@ def _build_cell_fill_requests(doc: dict, pending: dict) -> list[dict]:
     # on the wrong run.
     if pending["cells"]:
         filled = [
-            (cell_first_index[c["row"]][c["col"]], len(c["text"]))
+            (cell_first_index[c["row"]][c["col"]], u16len(c["text"]))
             for c in pending["cells"] if c["text"]
         ]
         for c in pending["cells"]:
@@ -682,7 +684,7 @@ def _build_cell_fill_requests(doc: dict, pending: dict) -> list[dict]:
             start = idx + sum(length for at, length in filled if at < idx)
             requests.append({
                 "updateTextStyle": {
-                    "range": {"startIndex": start, "endIndex": start + len(c["text"])},
+                    "range": {"startIndex": start, "endIndex": start + u16len(c["text"])},
                     "textStyle": {"bold": True},
                     "fields": "bold",
                 }

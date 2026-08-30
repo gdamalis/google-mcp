@@ -472,3 +472,40 @@ class TestTableCellFillAlignment:
         render_markdown_to_doc(service, "doc1", "| AB | CD |\n|---|---|\n| x | y |\n\nDespues.\n")
 
         assert service.documents.return_value.get.return_value.execute.call_count == 2
+
+
+class TestAstralCharacterIndices:
+    """Regression: an emoji outside the BMP is two UTF-16 units to the Docs
+    API but one code point to Python, so every index after it was one short.
+    Content ran into the previous paragraph and heading styles bled onto the
+    text that followed."""
+
+    def test_cursor_advances_by_utf16_units(self):
+        reqs = markdown_to_requests("## 📅 Cronograma\n\nTexto.\n", insert_index=1)
+        inserts = [r["insertText"] for r in reqs if "insertText" in r]
+        heading, para = inserts[0], inserts[1]
+
+        assert heading["text"] == "📅 Cronograma\n"
+        # 13 code points, 14 UTF-16 units. The paragraph belongs at 1 + 14.
+        assert len(heading["text"]) == 13
+        assert para["location"]["index"] == 15
+
+    def test_heading_style_range_covers_the_whole_heading(self):
+        reqs = markdown_to_requests("## 📅 Cronograma\n\nTexto.\n", insert_index=1)
+        style = [r for r in reqs if "updateParagraphStyle" in r][0]
+        assert style["updateParagraphStyle"]["range"] == {"startIndex": 1, "endIndex": 15}
+
+    def test_bmp_emoji_is_unaffected(self):
+        """❓ is inside the BMP, so nothing shifts."""
+        reqs = markdown_to_requests("## ❓ Por confirmar\n\nTexto.\n", insert_index=1)
+        inserts = [r["insertText"] for r in reqs if "insertText" in r]
+        assert inserts[1]["location"]["index"] == 1 + len(inserts[0]["text"])
+
+    def test_inline_style_range_after_an_emoji(self):
+        reqs = markdown_to_requests("Hola 📅 con **negrita**.\n", insert_index=1)
+        style = [r for r in reqs if "updateTextStyle" in r][0]["updateTextStyle"]
+        text = [r for r in reqs if "insertText" in r][0]["insertText"]["text"]
+        # "Hola 📅 con " is 11 code points but 12 UTF-16 units.
+        assert text.index("negrita") == 11
+        assert style["range"]["startIndex"] == 1 + 12
+        assert style["range"]["endIndex"] == 1 + 12 + 7
