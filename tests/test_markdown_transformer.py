@@ -364,3 +364,111 @@ class TestBulletWhitespaceConsumption:
         )
         # No nested items → no tabs consumed → next insert at list_end.
         assert next_insert["insertText"]["location"]["index"] == rng["endIndex"]
+
+
+class TestTableCellFillAlignment:
+    """Regression: content after a table landed inside a table cell.
+
+    Three separate defects, all in the same path:
+      1. the post-table index was read from the doc BEFORE the cells were
+         filled, so it described the empty table;
+      2. `_shift_indices` skipped the `_pending_table` sentinel's own
+         `insert_index`, so each further table measured its shift against a
+         stale position;
+      3. header-row bold ranges ignored the inserts that ran before them in
+         the same batch.
+    """
+
+    # A 2x2 table at index 1. Cell content starts at 3, 5, 7, 9.
+    @staticmethod
+    def _doc(table_end):
+        return {"body": {"content": [{
+            "startIndex": 1,
+            "endIndex": table_end,
+            "table": {"tableRows": [
+                {"tableCells": [
+                    {"content": [{"startIndex": 3}]},
+                    {"content": [{"startIndex": 5}]},
+                ]},
+                {"tableCells": [
+                    {"content": [{"startIndex": 7}]},
+                    {"content": [{"startIndex": 9}]},
+                ]},
+            ]},
+        }]}}
+
+    @staticmethod
+    def _pending():
+        return {
+            "insert_index": 1, "rows": 2, "cols": 2, "header_row": 0,
+            "cells": [
+                {"text": "AB", "row": 0, "col": 0, "header": True},
+                {"text": "CD", "row": 0, "col": 1, "header": True},
+                {"text": "x", "row": 1, "col": 0, "header": False},
+                {"text": "y", "row": 1, "col": 1, "header": False},
+            ],
+        }
+
+    def test_cells_are_inserted_back_to_front(self):
+        from tools.docs._markdown import _build_cell_fill_requests
+        reqs = _build_cell_fill_requests(self._doc(13), self._pending())
+        inserts = [r["insertText"]["location"]["index"] for r in reqs if "insertText" in r]
+        assert inserts == [9, 7, 5, 3]
+
+    def test_header_bold_accounts_for_earlier_inserts(self):
+        from tools.docs._markdown import _build_cell_fill_requests
+        reqs = _build_cell_fill_requests(self._doc(13), self._pending())
+        ranges = [r["updateTextStyle"]["range"] for r in reqs if "updateTextStyle" in r]
+
+        # "AB" stays at 3 — nothing is inserted before it. "CD" starts at 5 but
+        # the two characters of "AB" go in first, so it ends up at 7.
+        assert ranges[0] == {"startIndex": 3, "endIndex": 5}
+        assert ranges[1] == {"startIndex": 7, "endIndex": 9}
+
+    def test_shift_indices_moves_the_pending_table_sentinel(self):
+        from tools.docs._markdown import _shift_indices
+        requests = [{"_pending_table": {"insert_index": 40, "rows": 1, "cols": 2, "cells": []}}]
+        _shift_indices(requests, shift=9)
+        assert requests[0]["_pending_table"]["insert_index"] == 49
+
+    def test_post_table_index_uses_the_filled_table(self):
+        """The doc is re-read after the cell fill; content after the table is
+        placed at the filled table's end, not the empty one's."""
+        from unittest.mock import MagicMock
+        from tools.docs._markdown import render_markdown_to_doc
+
+        service = MagicMock()
+        # First read: empty table ends at 13. Second: filled, ends at 25.
+        service.documents.return_value.get.return_value.execute.side_effect = [
+            self._doc(13), self._doc(25),
+        ]
+        service.documents.return_value.batchUpdate.return_value.execute.return_value = {}
+
+        render_markdown_to_doc(service, "doc1", "| AB | CD |\n|---|---|\n| x | y |\n\nDespues.\n")
+
+        batches = [
+            c.kwargs["body"]["requests"]
+            for c in service.documents.return_value.batchUpdate.call_args_list
+        ]
+        trailing = [
+            r for batch in batches for r in batch
+            if "insertText" in r and r["insertText"]["text"].startswith("Despues")
+        ]
+        assert trailing, "the paragraph after the table was never sent"
+        # Transformer approximated 1 + (1 + 2*2*2 + 1) = 11; the real filled
+        # table ends at 25, so the paragraph belongs there.
+        assert trailing[0]["insertText"]["location"]["index"] == 25
+
+    def test_document_is_read_twice_per_table(self):
+        from unittest.mock import MagicMock
+        from tools.docs._markdown import render_markdown_to_doc
+
+        service = MagicMock()
+        service.documents.return_value.get.return_value.execute.side_effect = [
+            self._doc(13), self._doc(25),
+        ]
+        service.documents.return_value.batchUpdate.return_value.execute.return_value = {}
+
+        render_markdown_to_doc(service, "doc1", "| AB | CD |\n|---|---|\n| x | y |\n\nDespues.\n")
+
+        assert service.documents.return_value.get.return_value.execute.call_count == 2
