@@ -562,6 +562,10 @@ def render_markdown_to_doc(service: Any, document_id: str, markdown: str,
                     documentId=document_id, body={"requests": cell_requests}
                 ).execute()
                 response["replies"].extend(r.get("replies", []))
+                # Filling the cells grew the table. Read it again, or the
+                # post-table index below describes the empty table and every
+                # later request lands inside a cell.
+                doc = service.documents().get(documentId=document_id).execute()
 
             # Compute index shift: actual post-table index vs approximation.
             real_post_table = _find_post_table_end_index(doc, req["_pending_table"])
@@ -598,10 +602,15 @@ def _find_post_table_end_index(doc: dict, pending: dict) -> int:
 
 
 def _shift_indices(requests: list[dict], shift: int) -> None:
-    """In-place: shift any `index`/`startIndex`/`endIndex` field by `shift`,
-    recursively. Used to keep post-table requests aligned with real doc state
-    after a table insertion completes."""
-    _INDEX_KEYS = ("index", "startIndex", "endIndex")
+    """In-place: shift any `index`/`startIndex`/`endIndex`/`insert_index` field
+    by `shift`, recursively. Used to keep post-table requests aligned with real
+    doc state after a table insertion completes.
+
+    `insert_index` belongs to our own `_pending_table` sentinel rather than to
+    the Docs API. It has to move with everything else: a later table's sentinel
+    is what the shift for THAT table is measured against, and leaving it behind
+    makes every following table drift further."""
+    _INDEX_KEYS = ("index", "startIndex", "endIndex", "insert_index")
 
     def walk(obj):
         if isinstance(obj, dict):
@@ -657,18 +666,26 @@ def _build_cell_fill_requests(doc: dict, pending: dict) -> list[dict]:
                 "insertText": {"location": {"index": idx}, "text": c["text"]},
             })
 
-    # Style header row: bold
+    # Style header row: bold. These run after every insert above, in the same
+    # batch, so each header cell has already been pushed right by the text put
+    # into the cells that precede it. Without that offset the bold range lands
+    # on the wrong run.
     if pending["cells"]:
-        header_cells = [c for c in pending["cells"] if c["row"] == pending["header_row"]]
-        for c in header_cells:
+        filled = [
+            (cell_first_index[c["row"]][c["col"]], len(c["text"]))
+            for c in pending["cells"] if c["text"]
+        ]
+        for c in pending["cells"]:
+            if c["row"] != pending["header_row"] or not c["text"]:
+                continue
             idx = cell_first_index[c["row"]][c["col"]]
-            if c["text"]:
-                requests.append({
-                    "updateTextStyle": {
-                        "range": {"startIndex": idx, "endIndex": idx + len(c["text"])},
-                        "textStyle": {"bold": True},
-                        "fields": "bold",
-                    }
-                })
+            start = idx + sum(length for at, length in filled if at < idx)
+            requests.append({
+                "updateTextStyle": {
+                    "range": {"startIndex": start, "endIndex": start + len(c["text"])},
+                    "textStyle": {"bold": True},
+                    "fields": "bold",
+                }
+            })
 
     return requests
