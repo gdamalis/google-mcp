@@ -67,3 +67,32 @@ class TestEndIndex:
             {"endIndex": 20},
         ]}}
         assert end_index(doc) == 19
+
+
+class TestU16Len:
+    """The Docs API counts indices in UTF-16 code units, not code points."""
+
+    def test_ascii_matches_len(self):
+        from tools.docs._common import u16len
+        assert u16len("Titulo") == 6
+
+    def test_bmp_char_is_one_unit(self):
+        from tools.docs._common import u16len
+        # ✅ U+2705 and ❓ U+2753 sit inside the BMP.
+        assert u16len("✅") == 1
+        assert u16len("❓ Por confirmar") == len("❓ Por confirmar")
+
+    def test_astral_char_is_two_units(self):
+        from tools.docs._common import u16len
+        # 📅 U+1F4C5 needs a surrogate pair; Python reports 1, the API sees 2.
+        assert len("📅") == 1
+        assert u16len("📅") == 2
+
+    def test_heading_with_emoji(self):
+        from tools.docs._common import u16len
+        text = "📅 Cronograma de sesiones\n"
+        assert u16len(text) == len(text) + 1
+
+    def test_counts_each_astral_char(self):
+        from tools.docs._common import u16len
+        assert u16len("📅🎯📝") == 6
